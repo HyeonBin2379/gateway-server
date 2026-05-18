@@ -104,7 +104,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
 
 	private Mono<Void> authenticate(ServerWebExchange exchange, ServerHttpRequest sanitized,
 									GatewayFilterChain chain, String accessToken, String traceId) {
-		// [Step 1] 로컬 검증 (캐시 HIT 시 생략)
+		// [Step 1] 로컬 검증 - 만료되지 않았더라도 검증은 수행
 		Claims cachedClaims = claimsCache.getIfPresent(accessToken);
 		Mono<Boolean> localValidation = (cachedClaims != null && !isExpired(cachedClaims))
 				? Mono.just(true)
