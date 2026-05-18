@@ -24,7 +24,7 @@ const accounts = new SharedArray('accounts', function () {
 export const options = {
     stages: [
         { duration: '20s', target: 300 }, // Ramp-Up
-        { duration: '1m',  target: 300 }, // 유지
+        { duration: '5m',  target: 300 }, // 유지
         { duration: '10s', target: 0   }, // Ramp-Down
     ],
     thresholds: {
