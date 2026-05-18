@@ -1,32 +1,27 @@
 package org.pgsg.gateway.auth;
 
 import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
+import org.pgsg.gateway.cache.CacheUtil;
 import org.pgsg.gateway.client.AuthClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
-
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Component
 public class AuthProviderImpl implements AuthProvider {
 
-	private final Cache<String, Boolean> tokenCache;
+	private final Cache<String, Boolean> tokenVerifyCache;
 	private final AuthClient authClient;
 
-	public AuthProviderImpl(AuthClient authClient) {
+	public AuthProviderImpl(AuthClient authClient, CacheUtil cacheUtil) {
 		this.authClient = authClient;
-		this.tokenCache = Caffeine.newBuilder()
-				.expireAfterWrite(30, TimeUnit.SECONDS)
-				.maximumSize(10000)
-				.build();
+		this.tokenVerifyCache = cacheUtil.getTokenVerifyCache();
 	}
 
 	@Override
 	public Mono<Boolean> verifyToken(String accessToken) {
-		Boolean cachedResult = tokenCache.getIfPresent(accessToken);
+		Boolean cachedResult = tokenVerifyCache.getIfPresent(accessToken);
 
 		if (cachedResult != null) {
 			return Mono.just(cachedResult);
@@ -37,7 +32,7 @@ public class AuthProviderImpl implements AuthProvider {
 						&& response.success()
 						&& response.data() != null
 						&& response.data().isVerifiedToken())
-				.doOnNext(result -> tokenCache.put(accessToken, result))
+				.doOnNext(result -> tokenVerifyCache.put(accessToken, result))
 				.onErrorReturn(false);
 	}
 }
