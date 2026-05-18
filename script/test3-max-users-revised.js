@@ -7,7 +7,7 @@ import { SharedArray } from 'k6/data';
 
 // 환경변수
 // 실행 방법:
-// k6 run --env NGINX_IP=34.64.xxx.xxx --env ACCOUNTS_FILE=./p_user.csv test2-max-users.js
+// k6 run --env NGINX_IP=34.64.xxx.xxx --env ACCOUNTS_FILE=./p_user.csv test3-max-users-revised.js
 
 const BASE_URL = `http://${__ENV.NGINX_IP}`;
 
@@ -53,8 +53,13 @@ export const options = {
         { duration: '20s', target: 0   }, // Ramp-Down
     ],
     thresholds: {
-        'error_rate':        [{ threshold: 'rate<0.05',  abortOnFail: true }],
-        'http_req_duration': [{ threshold: 'p(95)<3000', abortOnFail: true }],
+        'error_rate':               [{ threshold: 'rate<0.05',  abortOnFail: true }],
+        'http_req_duration':        [{ threshold: 'p(95)<3000', abortOnFail: true }],
+        'stage_100vu_error_rate':   [{ threshold: 'rate<0.05',  abortOnFail: false }],
+        'stage_200vu_error_rate':   [{ threshold: 'rate<0.05',  abortOnFail: false }],
+        'stage_300vu_error_rate':   [{ threshold: 'rate<0.05',  abortOnFail: false }],
+        'stage_400vu_error_rate':   [{ threshold: 'rate<0.05',  abortOnFail: false }],
+        'stage_500vu_error_rate':   [{ threshold: 'rate<0.05',  abortOnFail: false }],
     },
 };
 
@@ -192,8 +197,26 @@ export function handleSummary(data) {
 
     stageSummary += '\n============================\n';
 
+    // 단계별 메트릭 분리 저장
+    const stageResults = {};
+    stages.forEach(vu => {
+        const latencyKey = `stage_${vu}vu_latency`;
+        const errorKey   = `stage_${vu}vu_error_rate`;
+        const l = data.metrics[latencyKey];
+        const e = data.metrics[errorKey];
+
+        if (l && e) {
+            stageResults[`result/result-test3-stage-${vu}vu.json`] = JSON.stringify({
+                vu,
+                latency: l.values,
+                errorRate: e.values,
+            }, null, 2);
+        }
+    });
+
     return {
-        'result/result-test2-max-users-revised.json': JSON.stringify(rest, null, 2),
+        'result/result-test3-max-users-revised.json': JSON.stringify(rest, null, 2),
+        ...stageResults,
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + stageSummary,
     };
 }
