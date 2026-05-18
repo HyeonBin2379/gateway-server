@@ -35,6 +35,7 @@ const stage400Errors = new Rate('stage_400vu_error_rate');
 const stage500Errors = new Rate('stage_500vu_error_rate');
 
 export const options = {
+    setupTimeout: '3m',
     stages: [
         { duration: '20s', target: 100 }, // Ramp-Up → 100명
         { duration: '1m',  target: 100 }, // 유지
