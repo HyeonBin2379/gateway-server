@@ -1,0 +1,92 @@
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      force_apply_retention_policy:
+        type: boolean
+        default: false
+    outputs:
+      image_tag:
+        value: ${{ jobs.build-and-push.outputs.image_tag }}
+
+env:
+  GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  AR_IMAGE_PATH: ${{ vars.AR_IMAGE_PATH }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          REGISTRY_HOST=$(echo "$AR_IMAGE_PATH" | cut -d/ -f1)
+          echo "registry_host=${REGISTRY_HOST}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply AR Image Retention Policy
+        if: |
+          contains(toJSON(github.event.commits.*.modified), 'deploy/ar-image-retention-policy.json') ||
+          contains(toJSON(github.event.commits.*.added), 'deploy/ar-image-retention-policy.json') ||
+          inputs.force_apply_retention_policy
+        run: |
+          REPO_NAME=$(echo "$AR_IMAGE_PATH" | cut -d/ -f3)
+          POLICY_FILE="deploy/ar-image-retention-policy.json"
+
+          if [ ! -f "$POLICY_FILE" ]; then
+            echo "Error: $POLICY_FILE not found"
+            exit 1
+          fi
+
+          REGION=$(echo "$AR_IMAGE_PATH" | sed 's/-docker\.pkg\.dev.*//')
+          gcloud artifacts repositories set-cleanup-policies "$REPO_NAME" \
+            --project="$GCP_PROJECT" \
+            --location="${REGION}" \
+            --policy="$POLICY_FILE" \
+            --quiet
+          echo "Successfully synced retention policy from $POLICY_FILE"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.registry_host }}
+          username: 'oauth2accesstoken'
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.AR_IMAGE_PATH }}:${{ steps.meta.outputs.tag }}
+            ${{ env.AR_IMAGE_PATH }}:latest
+          secrets: |
+            GPR_USER=${{ secrets.GPR_USER }}
+            GPR_TOKEN=${{ secrets.GPR_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,14 @@
+server:
+  http_listen_port: 9080
+
+clients:
+  - url: ${LOKI_URL:-http://loki:3100/loki/api/v1/push}
+
+scrape_configs:
+  - job_name: gateway-server
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: gateway-server
+          __path__: /logs/*.log

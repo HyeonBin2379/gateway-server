@@ -4,13 +4,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      secrets:
+        - GPR_USER
+        - GPR_TOKEN
     ports:
       - "8090:8090"
-    environment:
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    env_file:
+      - .env.runtime
     networks:
       - pgsg-network
 
 networks:
   pgsg-network:
     external: true
+
+secrets:
+  GPR_USER:
+    environment: GPR_USER
+  GPR_TOKEN:
+    environment: GPR_TOKEN

@@ -1,0 +1,62 @@
+name: _deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        type: string
+        required: true
+
+env:
+  GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  AR_IMAGE_PATH: ${{ vars.AR_IMAGE_PATH }}
+  WORK_DIR: /opt/gateway
+  HEALTH_RETRIES: 30
+  HEALTH_INTERVAL: 5
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        include:
+          - vm: gateway-server-1
+            zone: asia-northeast3-a
+          - vm: gateway-server-2
+            zone: asia-northeast3-b
+          - vm: gateway-server-3
+            zone: asia-northeast3-c
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to ${{ matrix.vm }}
+        uses: ./.github/actions/deploy-vm
+        with:
+          vm: ${{ matrix.vm }}
+          zone: ${{ matrix.zone }}
+          gcp_project: ${{ env.GCP_PROJECT }}
+          ar_image_path: ${{ env.AR_IMAGE_PATH }}
+          image_tag: ${{ inputs.image_tag }}
+          ar_token: ${{ steps.auth.outputs.access_token }}
+          work_dir: ${{ env.WORK_DIR }}
+          health_retries: ${{ env.HEALTH_RETRIES }}
+          health_interval: ${{ env.HEALTH_INTERVAL }}

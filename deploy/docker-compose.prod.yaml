@@ -1,0 +1,31 @@
+services:
+  gateway-server:
+    container_name: gateway-server
+    image: ${AR_IMAGE_PATH}:${IMAGE_TAG}
+    restart: always
+    ports:
+      - "8090:8090"
+    env_file:
+      - .env
+    volumes:
+      - /opt/gateway/logs:/logs # 게이트웨이에서 생성한 로그 파일을 저장할 경로
+    networks:
+      - pgsg-network
+
+  promtail:
+    image: grafana/promtail:2.9.1
+    container_name: promtail
+    restart: always
+    volumes:
+      - /opt/gateway/promtail-config.yml:/etc/promtail/config.yml
+      - /opt/gateway/logs:/logs # 로그 파일을 저장한 경로와 동일하게 지정
+    # promtail 2.9.1 버전은 명시적으로 환경변수 플래그를 지정해야 promtail-config.yml에 설정한 환경변수값 적용 가능
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
+    env_file:
+      - .env
+    networks:
+      - pgsg-network
+
+networks:
+  pgsg-network:
+    external: true

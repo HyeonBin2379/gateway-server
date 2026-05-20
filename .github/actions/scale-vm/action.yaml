@@ -1,0 +1,88 @@
+name: Scale VM
+description: GCP VM 인스턴스를 기동하거나 중지합니다
+
+inputs:
+  direction:
+    description: "'out' = 기동 | 'in' = 중지"
+    required: true
+  targets:
+    description: "공백 구분 'vm이름:zone' 목록 (예: server-2:asia-northeast3-b server-3:asia-northeast3-c)"
+    required: true
+  gcp_project:
+    description: "GCP 프로젝트 ID"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate direction
+      shell: bash
+      run: |
+        if [[ "${{ inputs.direction }}" != "out" && "${{ inputs.direction }}" != "in" ]]; then
+          echo "::error::direction은 'out' 또는 'in' 이어야 합니다"
+          exit 1
+        fi
+
+    - name: Start / Stop VMs
+      shell: bash
+      run: |
+        DIRECTION="${{ inputs.direction }}"
+        ACTION=$([ "$DIRECTION" = "out" ] && echo "start" || echo "stop")
+        WAIT_STATUS=$([ "$DIRECTION" = "out" ] && echo "RUNNING" || echo "TERMINATED")
+
+        for ENTRY in ${{ inputs.targets }}; do
+          VM="${ENTRY%%:*}"
+          ZONE="${ENTRY##*:}"
+
+          CURRENT=$(gcloud compute instances describe "$VM" \
+            --zone="$ZONE" \
+            --project="${{ inputs.gcp_project }}" \
+            --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$CURRENT" = "NOT_FOUND" ]; then
+            echo "::error::$VM ($ZONE) 을 찾을 수 없습니다 — VM을 먼저 생성해 주세요"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$WAIT_STATUS" ]; then
+            echo "✅ $VM is already $CURRENT — skipping"
+            continue
+          fi
+
+          echo "▶ ${ACTION}ing $VM ($ZONE)..."
+          gcloud compute instances "$ACTION" "$VM" \
+            --zone="$ZONE" \
+            --project="${{ inputs.gcp_project }}"
+        done
+
+    - name: Wait for target status
+      shell: bash
+      run: |
+        DIRECTION="${{ inputs.direction }}"
+        WAIT_STATUS=$([ "$DIRECTION" = "out" ] && echo "RUNNING" || echo "TERMINATED")
+
+        for ENTRY in ${{ inputs.targets }}; do
+          VM="${ENTRY%%:*}"
+          ZONE="${ENTRY##*:}"
+
+          echo "⏳ Waiting for $VM to be $WAIT_STATUS..."
+          for attempt in $(seq 1 20); do
+            CURRENT=$(gcloud compute instances describe "$VM" \
+              --zone="$ZONE" \
+              --project="${{ inputs.gcp_project }}" \
+              --format="value(status)")
+
+            if [ "$CURRENT" = "$WAIT_STATUS" ]; then
+              echo "✅ $VM is $WAIT_STATUS"
+              break
+            fi
+
+            if [ "$attempt" = "20" ]; then
+              echo "::error::$VM did not reach $WAIT_STATUS in time"
+              exit 1
+            fi
+
+            echo "  $VM is $CURRENT... ($attempt/20)"
+            sleep 15
+          done
+        done

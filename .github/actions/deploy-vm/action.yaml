@@ -1,0 +1,185 @@
+name: Deploy VM
+description: GCP VM에 Docker Compose 기반으로 배포하고, 실패 시 stable 태그로 롤백합니다
+
+inputs:
+  vm:
+    description: "VM 이름"
+    required: true
+  zone:
+    description: "VM 존"
+    required: true
+  gcp_project:
+    description: "GCP 프로젝트 ID"
+    required: true
+  ar_image_path:
+    description: "Artifact Registry 이미지 경로"
+    required: true
+  image_tag:
+    description: "배포할 이미지 태그"
+    required: true
+  ar_token:
+    description: "Artifact Registry 액세스 토큰"
+    required: true
+  work_dir:
+    description: "VM 내 작업 디렉토리"
+    required: true
+  health_retries:
+    description: "헬스체크 최대 재시도 횟수"
+    required: true
+  health_interval:
+    description: "헬스체크 재시도 간격(초)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # TERMINATED 상태면 이후 step 전체 스킵
+    - name: Check VM status
+      id: vm-status
+      shell: bash
+      run: |
+        STATUS=$(gcloud compute instances describe ${{ inputs.vm }} \
+          --zone="${{ inputs.zone }}" \
+          --project="${{ inputs.gcp_project }}" \
+          --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
+        if [ "$STATUS" = "NOT_FOUND" ]; then
+          echo "::error::${{ inputs.vm }} (${{ inputs.zone }}) 을(를) 찾을 수 없습니다."
+          exit 1
+        fi
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "${{ inputs.vm }} → $STATUS"
+
+    - name: Resolve rollback target
+      id: rollback
+      if: steps.vm-status.outputs.status == 'RUNNING'
+      shell: bash
+      run: |
+        STABLE=$(gcloud artifacts docker tags list "${{ inputs.ar_image_path }}" \
+          --project="${{ inputs.gcp_project }}" \
+          --filter="tag=stable" \
+          --format="value(tag)" 2>/dev/null | head -n1)
+
+        if [ -n "$STABLE" ]; then
+          echo "tag=stable" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag=" >> "$GITHUB_OUTPUT"
+          echo "No stable tag yet — rollback will be skipped if deploy fails."
+        fi
+
+    - name: Sync compose file
+      if: steps.vm-status.outputs.status == 'RUNNING'
+      shell: bash
+      run: |
+        gcloud compute scp deploy/docker-compose.prod.yaml \
+          ${{ inputs.vm }}:/tmp/docker-compose.prod.yaml \
+          --zone="${{ inputs.zone }}" \
+          --project="${{ inputs.gcp_project }}" \
+          --tunnel-through-iap
+        
+        gcloud compute scp deploy/promtail-config.yml \
+          ${{ inputs.vm }}:/tmp/promtail-config.yml \
+          --zone="${{ inputs.zone }}" \
+          --project="${{ inputs.gcp_project }}" \
+          --tunnel-through-iap
+
+    - name: Deploy and verify
+      id: deploy_run
+      if: steps.vm-status.outputs.status == 'RUNNING'
+      shell: bash
+      run: |
+        REGISTRY_HOST=$(echo "${{ inputs.ar_image_path }}" | cut -d/ -f1)
+
+        gcloud compute ssh ${{ inputs.vm }} \
+          --zone="${{ inputs.zone }}" \
+          --project="${{ inputs.gcp_project }}" \
+          --tunnel-through-iap \
+          --command="
+            set -e
+
+            echo '${{ inputs.ar_token }}' | sudo docker login -u oauth2accesstoken --password-stdin https://$REGISTRY_HOST
+
+            sudo mkdir -p ${{ inputs.work_dir }}
+            sudo mv /tmp/docker-compose.prod.yaml ${{ inputs.work_dir }}/docker-compose.prod.yaml
+            sudo mv /tmp/promtail-config.yml ${{ inputs.work_dir }}/promtail-config.yml
+            cd ${{ inputs.work_dir }}
+        
+            if ! sudo docker network inspect pgsg-network > /dev/null 2>&1; then
+              echo 'pgsg-network not found. Creating...'
+              sudo docker network create pgsg-network
+            fi
+
+            sudo env IMAGE_TAG=\"${{ inputs.image_tag }}\" AR_IMAGE_PATH=\"${{ inputs.ar_image_path }}\" \
+              docker compose -f docker-compose.prod.yaml pull
+            sudo env IMAGE_TAG=\"${{ inputs.image_tag }}\" AR_IMAGE_PATH=\"${{ inputs.ar_image_path }}\" \
+              docker compose -f docker-compose.prod.yaml up -d
+
+            echo 'Checking actuator health (max ${{ inputs.health_retries }} x ${{ inputs.health_interval }}s)...'
+            HEALTHY=0
+            for i in \$(seq 1 ${{ inputs.health_retries }}); do
+              if curl -sf http://localhost:8090/actuator/health | grep -q '\"status\":\"UP\"'; then
+                echo \"Actuator UP (attempt \$i)\"
+                HEALTHY=1
+                break
+              fi
+              echo \"Waiting for service... (\$i/${{ inputs.health_retries }})\"
+              sleep ${{ inputs.health_interval }}
+            done
+
+            if [ \"\$HEALTHY\" != '1' ]; then
+              echo 'Actuator health check failed.'
+              exit 1
+            fi
+          "
+
+    - name: Rollback
+      if: failure() && steps.deploy_run.conclusion == 'failure' && steps.rollback.outputs.tag != ''
+      shell: bash
+      run: |
+        set +e
+        REGISTRY_HOST=$(echo "${{ inputs.ar_image_path }}" | cut -d/ -f1)
+
+        attempt_rollback() {
+          gcloud compute ssh ${{ inputs.vm }} \
+            --zone="${{ inputs.zone }}" \
+            --project="${{ inputs.gcp_project }}" \
+            --tunnel-through-iap \
+            --command="
+              set -e
+
+              echo '${{ inputs.ar_token }}' | sudo docker login -u oauth2accesstoken --password-stdin https://$REGISTRY_HOST
+              cd ${{ inputs.work_dir }}
+
+              sudo docker compose -f docker-compose.prod.yaml down --remove-orphans -t 5 || true
+
+              sudo env IMAGE_TAG=\"${{ steps.rollback.outputs.tag }}\" AR_IMAGE_PATH=\"${{ inputs.ar_image_path }}\" \
+                docker compose -f docker-compose.prod.yaml pull
+              sudo env IMAGE_TAG=\"${{ steps.rollback.outputs.tag }}\" AR_IMAGE_PATH=\"${{ inputs.ar_image_path }}\" \
+                docker compose -f docker-compose.prod.yaml up -d
+
+              for i in \$(seq 1 ${{ inputs.health_retries }}); do
+                if curl -sf http://localhost:8090/actuator/health | grep -q '\"status\":\"UP\"'; then
+                  echo \"Rollback container UP (attempt \$i)\"
+                  exit 0
+                fi
+                sleep ${{ inputs.health_interval }}
+              done
+
+              echo 'Rollback container did not become healthy.'
+              exit 1
+            "
+        }
+
+        for attempt in 1 2 3; do
+          echo "::group::Rollback attempt $attempt/3 on ${{ inputs.vm }}"
+          attempt_rollback
+          RC=$?
+          echo "::endgroup::"
+
+          [ $RC -eq 0 ] && echo "Rollback succeeded on attempt $attempt." && exit 0
+
+          echo "Rollback attempt $attempt failed (exit=$RC)."
+          [ $attempt -lt 3 ] && echo "Retrying in 15s..." && sleep 15
+        done
+
+        echo "::error::All rollback attempts failed on ${{ inputs.vm }}. Manual intervention required."
+        exit 1

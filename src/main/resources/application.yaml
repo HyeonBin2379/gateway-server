@@ -1,24 +1,38 @@
-server:
-  port: 8090
-
 spring:
   application:
     name: gateway-server
+  config:
+    import:
+      - "optional:configserver:"
+      - "optional:file:.env[.properties]"
   cloud:
     config:
-      enabled: false
-    gateway:
-      server:
-        webmvc:
-          routes:
-            - id: trace-server
-              uri: lb://trace-server
-              predicates:
-                - Path=/api/v1/trace/**
+      allow-override: true
+      override-none: true
+      override-system-properties: false
+      discovery:
+        service-id: config-server
+        enabled: true
 
 eureka:
+  instance:
+    prefer-ip-address: true
+    ip-address: ${HOSTNAME:localhost}
+    hostname: ${HOSTNAME:localhost}
+    instance-id: "${HOSTNAME:${spring.application.name}}:${spring.application.name}:${server.port}"
   client:
-    fetch-registry: true
     register-with-eureka: true
+    fetch-registry: true
     service-url:
-      defaultZone: http://eureka-server:8761/eureka/
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+
+server:
+  port: 8090
+
+management:
+  tracing:
+    sampling:
+      probability: 0.1
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}

@@ -1,0 +1,42 @@
+name: _scale
+
+on:
+  workflow_call:
+    inputs:
+      direction:
+        description: "'out' = 2, 3번 서버 기동 | 'in' = 2, 3번 서버 중지"
+        type: string
+        required: true
+
+env:
+  GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  # VM 이름:존 목록 — 서버 추가 시 여기만 수정
+  SCALE_TARGETS: "gateway-server-2:asia-northeast3-b gateway-server-3:asia-northeast3-c"
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # scale-vm action을 불러오기 위해 추가
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Scale ${{ inputs.direction }}
+        uses: ./.github/actions/scale-vm
+        with:
+          direction: ${{ inputs.direction }}
+          targets: ${{ env.SCALE_TARGETS }}
+          gcp_project: ${{ env.GCP_PROJECT }}

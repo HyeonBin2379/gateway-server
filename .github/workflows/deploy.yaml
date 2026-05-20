@@ -1,0 +1,97 @@
+name: Deploy Gateway Server
+
+on:
+  push:
+    branches: [ main, dev ]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "실행할 작업"
+        type: choice
+        default: deploy-only
+        options:
+          - scale-out-and-deploy
+          - deploy-only
+          - scale-in
+      force_apply_retention_policy:
+        description: "AR retention policy 적용"
+        type: boolean
+        default: false
+
+jobs:
+  build-and-push:
+    if: github.event.inputs.action != 'scale-in'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_build.yaml
+    with:
+      force_apply_retention_policy: ${{ inputs.force_apply_retention_policy || false }}
+    secrets: inherit
+
+  scale-out:
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.action == 'scale-out-and-deploy'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_scale.yaml
+    with:
+      direction: out
+    secrets: inherit
+
+  deploy:
+    needs: [ build-and-push, scale-out ]
+    if: |
+      always() &&
+      needs.build-and-push.result == 'success' &&
+      (needs.scale-out.result == 'success' || needs.scale-out.result == 'skipped') &&
+      github.event.inputs.action != 'scale-in' &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_deploy.yaml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    secrets: inherit
+
+  scale-in:
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.action == 'scale-in'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_scale.yaml
+    with:
+      direction: in
+    secrets: inherit
+
+  scale-in-on-failure:
+    needs: [ scale-out, deploy ]
+    if: |
+      always() &&
+      needs.scale-out.result == 'success' &&
+      needs.deploy.result != 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_scale.yaml
+    with:
+      direction: in
+    secrets: inherit
+
+  promote-stable:
+    needs: [ build-and-push, deploy ]
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') &&
+      needs.deploy.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_promote.yaml
+    with:
+      image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    secrets: inherit

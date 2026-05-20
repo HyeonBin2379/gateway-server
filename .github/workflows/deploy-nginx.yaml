@@ -1,0 +1,115 @@
+name: Deploy Nginx
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - 'deploy/nginx/nginx.conf'   # nginx.conf 변경 시에만 실행
+  workflow_dispatch:          # 수동 실행 (긴급 시)
+
+env:
+  GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  NGINX_VM: nginx-server
+  NGINX_ZONE: asia-northeast3-a
+
+jobs:
+  deploy-nginx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Check Nginx VM status
+        id: vm-status
+        run: |
+          STATUS=$(gcloud compute instances describe "$NGINX_VM" \
+            --zone="$NGINX_ZONE" \
+            --project="$GCP_PROJECT" \
+            --format="value(status)" 2>/dev/null || echo "NOT_FOUND")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "$NGINX_VM → $STATUS"
+
+          if [ "$STATUS" = "NOT_FOUND" ]; then
+            echo "::error::$NGINX_VM not found — VM을 먼저 생성해 주세요"
+            exit 1
+          fi
+
+          if [ "$STATUS" != "RUNNING" ]; then
+            echo "::error::$NGINX_VM is $STATUS — RUNNING 상태여야 합니다"
+            exit 1
+          fi
+
+      - name: Sync nginx.conf to VM
+        run: |
+          gcloud compute scp deploy/nginx/nginx.conf \
+            $NGINX_VM:/tmp/nginx.conf \
+            --zone="$NGINX_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tunnel-through-iap
+
+      # 기존 conf를 bak으로 rename → sites-enabled에서 검증 → conf.d에 반영 → reload 실패 시 복구 → 성공 시 bak 제거
+      - name: Apply nginx.conf and reload
+        run: |
+          gcloud compute ssh $NGINX_VM \
+            --zone="$NGINX_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="
+              set -e
+
+              if [ -f /etc/nginx/conf.d/gateway.conf ]; then
+                sudo mv /etc/nginx/conf.d/gateway.conf /etc/nginx/conf.d/gateway.conf.bak
+              fi
+
+              sudo cp /tmp/nginx.conf /etc/nginx/sites-enabled/gateway.tmp.conf
+
+              if ! sudo nginx -t; then
+                echo '❌ nginx.conf validation failed — gateway.conf is unchanged'
+                sudo rm /etc/nginx/sites-enabled/gateway.tmp.conf
+                [ -f /etc/nginx/conf.d/gateway.conf.bak ] && sudo mv /etc/nginx/conf.d/gateway.conf.bak /etc/nginx/conf.d/gateway.conf
+                exit 1
+              fi
+
+              sudo rm /etc/nginx/sites-enabled/gateway.tmp.conf
+              sudo mv /etc/nginx/conf.d/gateway.conf.bak /etc/nginx/conf.d/gateway.conf 2>/dev/null || true
+              sudo cp /tmp/nginx.conf /etc/nginx/conf.d/gateway.conf
+
+              if ! sudo nginx -s reload; then
+                [ -f /etc/nginx/conf.d/gateway.conf.bak ] && sudo cp /etc/nginx/conf.d/gateway.conf.bak /etc/nginx/conf.d/gateway.conf
+                sudo nginx -s reload || true
+                echo '❌ Nginx reload failed — rolled back to previous gateway.conf'
+                exit 1
+              fi
+
+              sudo rm -f /etc/nginx/conf.d/gateway.conf.bak
+              echo '✅ Nginx reloaded successfully'
+            "
+
+      - name: Verify Nginx is running
+        run: |
+          gcloud compute ssh $NGINX_VM \
+            --zone="$NGINX_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="
+              STATUS=\$(sudo systemctl is-active nginx)
+              if [ \"\$STATUS\" = 'active' ]; then
+                echo '✅ Nginx is active'
+              else
+                echo '::error::Nginx is not active — status: '\$STATUS
+                exit 1
+              fi
+            "

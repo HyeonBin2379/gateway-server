@@ -1,0 +1,11 @@
+[
+  {
+    "name": "keep-latest-3-images",
+    "action": {
+      "type": "Keep"
+    },
+    "mostRecentVersions": {
+      "keepCount": 3
+    }
+  }
+]

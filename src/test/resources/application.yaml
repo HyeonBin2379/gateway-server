@@ -5,8 +5,14 @@ spring:
     config:
       enabled: false
   config:
-    import: ""
+    import: "optional:file:.env[.properties]"
 
 eureka:
   client:
     enabled: false
+
+jwt:
+  # 환경변수로 주입(테스트용이므로 jwt.secret도 기본값 부여)
+  secret: ${JWT_SECRET:test-jwt-secret-for-local-ci-only-32bytes-min}
+  access-token-expiration: ${JWT_ACCESS_EXPIRATION:1800000}   # 30분 (ms)
+  refresh-token-expiration: ${JWT_REFRESH_EXPIRATION:604800000} # 7일 (ms)
