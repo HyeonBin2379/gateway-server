@@ -1,6 +1,6 @@
 # PGSG Gateway Server
 
-PGSG 마이크로서비스 아키텍처의 강력한 보안 입구이자 통합 관측성(Observability) 허브 역할을 수행하는 게이트웨이 서버입니다.
+89-49(팔구사구) MSA 기반 P2P 거래 플랫폼(내부 코드네임: PGSG)의 강력한 보안 입구이자 통합 관측성(Observability) 허브 역할을 수행하는 게이트웨이 서버입니다.
 
 ## 🌟 핵심 기능 (Core Capabilities)
 
@@ -26,6 +26,11 @@ PGSG 마이크로서비스 아키텍처의 강력한 보안 입구이자 통합 
 - **안전한 배포 및 롤백**: 배포 후 Actuator 헬스체크 실패 시, 즉시 이전의 안정적인(`stable`) 태그 이미지로 자동 롤백하는 Fail-Safe 로직을 갖추고 있습니다.
 - **유연한 스케일링 (Manual Trigger)**: GitHub Actions 워크플로우(`_scale.yaml`)를 통해 필요시 수동으로 게이트웨이 서버(2, 3번 노드)를 Scale-In / Scale-Out 할 수 있는 자동화 스크립트를 제공합니다.
 - **통합 로그 수집 및 로드밸런싱**: Docker Compose를 통해 Promtail을 함께 배포하여 Loki로 로그를 중앙 집중화하며, Nginx(`least_conn`)를 활용해 다중 게이트웨이 인스턴스로 트래픽을 효율적으로 분산합니다.
+
+### 6. 테스트 및 검증 (Testing & Verification)
+
+- **통합 테스트 기반 검증**: 게이트웨이 인증 필터의 핵심 시나리오(토큰 검증, 블랙리스트 차단, 화이트리스트 통과)에 대한 통합 테스트를 작성하여 안정성을 확보했습니다. ([PR #7](https://github.com/89-49/gateway-server/pull/7))
+- **아키텍처 전환 후 동작 재검증**: 게이트웨이를 서블릿 기반에서 WebFlux 기반으로 전환하는 과정에서, 기존 통합 테스트 코드를 WebTestClient 및 WireMock 기반으로 업데이트하여 토큰 검증·블랙리스트 차단·화이트리스트 통과 시나리오가 리팩토링 이후에도 동일하게 정상 동작함을 재확인했습니다. ([PR #28](https://github.com/89-49/gateway-server/pull/28))
 
 ## 🛠 기술 스택
 - **Runtime**: Java 21 / Spring Boot 3.5.13
